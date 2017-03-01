@@ -77,8 +77,7 @@ fetch('/api/user/self', function(e, user) {
         }
       });
     });
-    }
-  }
+  });
 });
 ```
 
@@ -97,14 +96,14 @@ fetch('/api/user/self')
     .then(function (interests) {
         return Promise.all[interests.map(i => fetch('/api/recommendations?topic=' + i))];
     })
-    .then(function (recomendations) {
+    .then(function (recommendations) {
         render(user, interests, recommendations);
     });
 ```
 
 Beautiful, right? See what's wrong with the code yet?
 
-............................Ooops.....................
+............................Ooops!.........................
 
 We don't have access to profile or interests in the last function in the chain!? So it doesn't work!
 What can we do? Well, we can nest promises:
@@ -195,4 +194,331 @@ Of course!...................... Not. Let's burst the illusion.
 
 ## Generators
 
-Generators are simple to use, but there's actually a lot going on here.
+Generators look simple to use in our example, but there's actually a lot going on here. To dive deeper on async generators, we'll need a better understanding of how generators behave and how it enables synchronous-looking async operations.
+
+A generator, well, generates values:
+
+```javascript
+function* counts(start) {
+  yield start + 1;
+  yield start + 2;
+  yield start + 3;
+  return start + 4;
+}
+
+const counter = counts(0);
+console.log(counter.next()); // {value: 1, done: false}
+console.log(counter.next()); // {value: 2, done: false}
+console.log(counter.next()); // {value: 3, done: false}
+console.log(counter.next()); // {value: 4, done: true}
+```
+
+This is pretty straightforward, but let's talk through what's going on anyways:
+
+1. `const counter = counts();` - Initialize the generator and save it to the `counter` variable. The generator is in the suspended state and no code inside the generator body has yet been executed.
+2. `console.log(counter.next());` - The yield 1 is evaluated, and 1 is returned as the `value`, and `done` is false because there's more yielding to be done
+3. `console.log(counter.next());` - Next up is 2!
+4. `console.log(counter.next());` - Next up is 3! And we are at the end. Done right? No. Execution pauses at yield 3; We need to call `next()` again to finish.
+5. `console.log(counter.next());` - Next up is 4, and it's returned instead of yielded, so we exit and are done.
+6. `console.log(counter.next());` - The generator is already done! It's got nothing to say other than that it's done.
+
+We understand how generators work now! But wait, shocking truth: generators don't just spit out values, they can eat them too!
+
+```javascript
+function* printer() {
+  console.log("We are starting!");
+  console.log(yield);
+  console.log(yield);
+  console.log(yield);
+  console.log("We are done!");
+}
+
+const counter = printer();
+counter.next(1); // We are starting!
+counter.next(2); // 2
+counter.next(3); // 3
+counter.next(4); // 4
+counter.next(5); // We are done!
+```
+
+Woah, what?! The generator is consuming values instead of generating them. How is this possible?
+
+The secret is the `next` function. It not only returns values from the generator, but can send values back into the generator. When `next()` is given an argument, the `yield` that the generator is currently waiting on is actually evaluated into the argument. This is why the first `counter.next(1)` logged `undefined`. There's no `yield` to resolve yet.
+
+It's as if generators let the caller code (routine) and the generator code (routine) work together as partners, passing values back and forth to each other as they execute and wait on each other. It's almost as if generators in Javascript were designed for you to be able to implement cooperative concurrently executing routines, or "co-routines". Hey! that looks kinda like `co()` doesn't it?
+
+But let's not be too clever and get ahead of ourselves yet. This exercise is about building intuition about generators and asynchronous programming, and what better way to build intuition about generators, than to build a generator? Not write a generator function, or use one, but build the internals of a generator function.
+
+## Generator internals
+
+Okay, I actually don't know what the generator internals look like in the various JS runtimes. But it doesn't really matter. Generators follow an interface. A "constructor" to instantiate the generator, a `next(value? : any)` method to tell the generator to continue and give it values, and a `throw(error)` method give it an error instead of a `value` and `return()` method that we'll gloss over. If we can satisfy the interface, we are good.
+
+So, let's try building the `counts()` generator up above, and write it using ES5 without the `function*` keyword. We can ignore `throw()` and passing `value` into `next()` for now, since it doesn't take any input. How do we do it?
+
+Closures, state machines, and elbow grease!
+
+```javascript
+function counts(start) {
+  let state = 0;
+  let done = false;
+
+  function go() {
+    let result;
+
+    switch (state) {
+      case 0:
+        result = start + 1;
+        state = 1;
+        break;
+      case 1:
+        result = start + 2;
+        state = 2;
+        break;
+      case 2:
+        result = start + 3;
+        state = 3;
+        break;
+      case 3:
+        result = start + 4;
+        done = true;
+        state = -1;
+        break;
+      default:
+        break;
+    }
+
+    return {done: done, value: result};
+  }
+
+  return {
+    next: go
+  }
+}
+
+const counter = counts(0);
+console.log(counter.next()); // {value: 1, done: false}
+console.log(counter.next()); // {value: 2, done: false}
+console.log(counter.next()); // {value: 3, done: false}
+console.log(counter.next()); // {value: 4, done: true}
+console.log(counter.next()); // {value: undefined, done: true}
+```
+
+If you run this, you'll see that we get the same results as the generator version. Neat right?
+
+Okay, now that we have deconstructed the generator-as-producer, how do we go about implementing the generator-as-consumer?
+
+It's actually not too different.
+
+```javascript
+function printer(start) {
+  let state = 0;
+  let done = false;
+
+  function go(input) {
+    let result;
+
+    switch (state) {
+      case 0:
+        console.log("We are starting!");
+        state = 1;
+        break;
+      case 1:
+        console.log(input);
+        state = 2;
+        break;
+      case 2:
+        console.log(input);
+        state = 3;
+        break;
+      case 3:
+        console.log(input);
+        console.log("We are done!");
+        done = true;
+        state = -1;
+        break;
+      default:
+        break;
+
+      return {done: done, value: result};
+    }
+  }
+
+  return {
+    next: go
+  }
+}
+
+const counter = printer();
+counter.next(1); // We are starting!
+counter.next(2); // 2
+counter.next(3); // 3
+counter.next(4); // 4
+counter.next(5); // We are done!
+```
+
+All we had to do was to add `input` as an argument to `go`, and the values got piped through. Kind of magical right? Almost as magical as generators?
+
+Yay! Now we've made a generator-as-producer and a generator-as-consumer. Why don't we try building a generator-as-producer-and-consumer? Here's another contrived generator:
+
+```javascript
+function* adder(initialValue) {
+  let sum = initialValue;
+  while (true) {
+    sum += yield sum;
+  }
+}
+```
+
+Since we are generator gurus now, we understand that this generator adds the value provided in `next(value)` to the `sum`, and returns the `sum`. And it behaves just like we'd expect:
+
+```javascript
+const add = adder(0);
+console.log(add.next()); // 0
+console.log(add.next(1)); // 1
+console.log(add.next(2)); // 3
+console.log(add.next(3)); // 6
+```
+
+Cool. Now let's build it this interface as a regular function!
+
+```javascript
+function adder(initialValue) {
+  let state = 0;
+  let done = false;
+  let sum = initialValue;
+
+  function go(input) {
+    let result;
+
+    switch (state) {
+      case 0:
+        result = initialValue;
+        state = 1;
+        break;
+      case 1:
+        sum += input;
+        result = sum;
+        state = 1;
+        break;
+      default:
+        break;
+    }
+
+    return {done: done, value: result};
+  }
+
+  return {
+    next: go
+  }
+}
+
+function runner() {
+  const add = adder(0);
+  console.log(add.next()); // 0
+  console.log(add.next(1)); // 1
+  console.log(add.next(2)); // 3
+  console.log(add.next(3)); // 6
+}
+
+runner();
+```
+
+Whew, we've implemented a bonafide co-routine. The `runner()` the `adder()` gives the `adder()` values, `adder()` adds and returns the sum, and then `runner()` prints the sum and gives `adder()` a new value to add.
+
+There's one more little bit to cover with generators. How do exceptions work? Well, exceptions that occur inside the generators are easy: `next()` will propagate the exception to the caller, and the generator dies. Relaying an exception to a generator relies on the `throw()` method we glossed over.
+
+Let's give our adder a crazy interface. If an exception is relayed to the generator by the caller, it will revert to the last value of the sum.
+
+```javascript
+function* adder(initialValue) {
+  let sum = initialValue;
+  let lastSum = initialValue;
+  let temp;
+  while (true) {
+    try {
+      temp = sum;
+      sum += yield sum;
+      lastSum = temp;
+    } catch (e) {
+      sum = lastSum;
+    }
+  }
+}
+
+const add = adder(0);
+console.log(add.next()); // 0
+console.log(add.next(1)); // 1
+console.log(add.next(2)); // 3
+console.log(add.throw(new Error('BOO)!'))); // 1
+console.log(add.next(4)); // 5
+```
+
+Oh boy, how do we implement `throw()`? Simple! An error is just another value. We can just pass it into `go()` as another argument. Note that we actually have to be a little careful here. When `throw(e)` is called, the `yield` inside the generator will have the same effect as if it were written as `throw e`. This means that we actually should be checking for error in _every_ state in our state machine, and failing if we can't handle it.
+
+```javascript
+function adder(initialValue) {
+  let state = 0;
+  let done = false;
+  let sum = initialValue;
+  let lastSum;
+  let temp;
+
+  function go(input, err) {
+    let result;
+
+    switch (state) {
+      case 0:
+        if (err) {
+          throw err;
+        }
+        temp = sum;
+        result = initialValue;
+        state = 1;
+        break;
+      case 1:
+        try {
+          if (err) {
+            throw err;
+          }
+          sum += input;
+          lastSum = temp;
+          temp = sum;
+        } catch (e) {
+          sum = lastSum;
+        }
+        result = sum;
+        state = 1;
+        break;
+      default:
+        break;
+    }
+
+    return {done: done, value: result};
+  }
+
+  return {
+    next: go,
+    throw: function (err) {
+      return go(undefined, err)
+    }
+  }
+}
+
+const add = adder(0);
+console.log(add.next()); // 0
+console.log(add.next(1)); // 1
+console.log(add.next(2)); // 3
+console.log(add.throw(new Error('BOO)!'))); // 1
+console.log(add.next(4)); // 5
+```
+
+It's getting gnarly isn't it? The state machine implementation is starting to drift further from the generator implementation. Not only is the error handling adding cruft, the fact that we have a longer while loop makes the code more complicated. To convert the while loop, we have to "unfurl" loop into states. Our case 1 actually 2 half iterations of the while loop because the `yield` breaks it in the middle. And finally, we had to add extra code to propagate exceptions from the caller back to the caller if the generator doesn't have a `try/catch` block to handle it.
+
+You made it!! We finished the deep dive into how generators could potentially be implemented, and I hope you've gained a better intuitive understanding of how generators work. In summary:
+
+- A generator can produce or consume values, or both
+- A generator's state can be paused (state, state machine, get it?)
+- A caller and a generator can form a set of co-routines that cooperate with each other
+- Exceptions can be sent in either direction.
+
+A potentially useful way to think of generators, now that we have a better understanding, a syntax for us to write concurrently running routines can pass messages to each other through a single value channel (the `yield` statement). This will be useful in the next section, where we derive the implementation of `co()` from co-routines.
