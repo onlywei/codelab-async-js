@@ -249,11 +249,31 @@ It's as if generators let the caller code (routine) and the generator code (rout
 
 But let's not be too clever and get ahead of ourselves yet. This exercise is about building intuition about generators and asynchronous programming, and what better way to build intuition about generators, than to build a generator? Not write a generator function, or use one, but build the internals of a generator function.
 
-## Generator internals
+## Generator internals - generating generators
 
 Okay, I actually don't know what the generator internals look like in the various JS runtimes. But it doesn't really matter. Generators follow an interface. A "constructor" to instantiate the generator, a `next(value? : any)` method to tell the generator to continue and give it values, and a `throw(error)` method give it an error instead of a `value` and `return()` method that we'll gloss over. If we can satisfy the interface, we are good.
 
 So, let's try building the `counts()` generator up above, and write it using ES5 without the `function*` keyword. We can ignore `throw()` and passing `value` into `next()` for now, since it doesn't take any input. How do we do it?
+
+Well, there's actually another means of pausing and continuing program execution in Javascript: closures! Does this look familiar?
+
+```javascript
+function makeCounter() {
+  var count = 1;
+  return function () {
+    return count++;
+  }
+}
+
+var counter = makeCounter();
+console.log(counter()); // 1
+console.log(counter()); // 2
+console.log(counter()); // 3
+```
+
+If you've used closures before, I'm sure you've written something similar in the past. The function returned by `makeCounter` can _generate_ an infinite series of numbers, just like a _generator_.
+
+But, this function doesn't abide by the generator interface, and isn't directly applicable to our `counts()` example, which returns 4 values and exits. How do we apply a general approach to writing generator-like functions?
 
 Closures, state machines, and elbow grease!
 
@@ -453,7 +473,9 @@ console.log(add.throw(new Error('BOO)!'))); // 1
 console.log(add.next(4)); // 5
 ```
 
-Oh boy, how do we implement `throw()`? Simple! An error is just another value. We can just pass it into `go()` as another argument. Note that we actually have to be a little careful here. When `throw(e)` is called, the `yield` inside the generator will have the same effect as if it were written as `throw e`. This means that we actually should be checking for error in _every_ state in our state machine, and failing if we can't handle it.
+Oh boy, how do we implement `throw()`?
+
+Simple! An error is just another value. We can just pass it into `go()` as another argument. Note that we actually have to be a little careful here. When `throw(e)` is called, the `yield` inside the generator will have the same effect as if it were written as `throw e`. This means that we actually should be checking for error in _every_ state in our state machine, and failing if we can't handle it.
 
 ```javascript
 function adder(initialValue) {
@@ -512,7 +534,9 @@ console.log(add.throw(new Error('BOO)!'))); // 1
 console.log(add.next(4)); // 5
 ```
 
-It's getting gnarly isn't it? The state machine implementation is starting to drift further from the generator implementation. Not only is the error handling adding cruft, the fact that we have a longer while loop makes the code more complicated. To convert the while loop, we have to "unfurl" loop into states. Our case 1 actually 2 half iterations of the while loop because the `yield` breaks it in the middle. And finally, we had to add extra code to propagate exceptions from the caller back to the caller if the generator doesn't have a `try/catch` block to handle it.
+Boom! We've implemented a set of co-routines that can pass messages and exceptions to each other, just like a real generator can.
+
+But it's getting gnarly isn't it? The state machine implementation is starting to drift further from the generator implementation. Not only is the error handling adding cruft, the fact that we have a longer while loop makes the code more complicated. To convert the while loop, we have to "unfurl" loop into states. Our case 1 actually 2 half iterations of the while loop because the `yield` breaks it in the middle. And finally, we had to add extra code to propagate exceptions from the caller back to the caller if the generator doesn't have a `try/catch` block to handle it.
 
 You made it!! We finished the deep dive into how generators could potentially be implemented, and I hope you've gained a better intuitive understanding of how generators work. In summary:
 
@@ -522,3 +546,45 @@ You made it!! We finished the deep dive into how generators could potentially be
 - Exceptions can be sent in either direction.
 
 A potentially useful way to think of generators, now that we have a better understanding, a syntax for us to write concurrently running routines can pass messages to each other through a single value channel (the `yield` statement). This will be useful in the next section, where we derive the implementation of `co()` from co-routines.
+
+## Inversion of control using co-routines
+
+Now that we are generator experts, let's think about how we can apply generators to asynchronous programming. Being able to write generators by themselves does not mean that Promises within generators can automatically get resolved. But wait, generators aren't designed to work by themselves. They are designed to work in cooperation with another program, the primary routine, the one that calls `.next()` and `.throw()`.
+
+What if, instead of putting our business logic in the primary routine, we put all our business logic in the generator. Every time the business logic encounters some asynchronous value like a Promise, the generator just goes, "I don't want to deal with this craziness, wake me up when it resolves", and pauses and yields the Promise to a servant routine. And the servant routine decides, "fine, I'll call you later". Then the servant routine registers a callback on the promise, exits, and waits for the event loop to call it when the promise resolves. When it does, it goes "hey, it's ready, your turn", and sends the value via `.next()` to the sleeping generator, waits for the generator to do its thing, and then gets back another asynchronous chore to deal with... and so on. And so goes the sad story of how the servant routine serves the generator for all time.
+
+Sniff, let's get back to the main topic. Given our knowledge of how generators and promises work, it shouldn't be too difficult for us to create this "servant routine". The servant routine will itself, execute concurrently as a Promise, instantiating and serving the generator, and then returning the final result to our primary routine via a `.then()` callback.
+
+Now let's go back and look at the `co()` program. `co()` is the servant routine that's slaving away so that the generator can work off of only synchronous values. Makes a lot more sense now right?
+
+```javascript
+co(function* () {
+  var user = yield fetch('/api/user/self');
+  var interests = yield fetch('/api/user/interests?userId=' + self.id);
+  var recommendations = yield Promise.all(
+      interests.map(i => fetch('/api/recommendations?topic=' + i)));
+  render(user, interests, recommendations);
+});
+```
+
+Great! Now let's build `co()` ourselves and build up some intuition on how exactly this slave routine works. `co()` must
+
+- Instantiate the generator
+- Continuously call `.next()` to get new values
+- If it gets a Promise, it must wait for it to complete and pass the resolved value to the generator
+- If it's not a Promise, it will assume the generator made a mistake and pass it back.
+
+Let's not worry about errors for now, and build a simple `co()` method that can handle the contrived example below:
+
+```javascript
+function deferred(val) {
+  return new Promise((resolve, reject) => resolve(val));
+}
+
+co(function* asyncAdds() {
+  yield deferred(1);
+  yield 2;
+  yield deferred(3);
+  yield 4;
+});
+```
