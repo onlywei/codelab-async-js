@@ -213,6 +213,7 @@ console.log(counter.next()); // {value: 1, done: false}
 console.log(counter.next()); // {value: 2, done: false}
 console.log(counter.next()); // {value: 3, done: false}
 console.log(counter.next()); // {value: 4, done: true}
+console.log(counter.next()); // {value: undefined, done: true}
 ```
 
 This is pretty straightforward, but let's talk through what's going on anyways:
@@ -245,8 +246,8 @@ const counter = printer();
 counter.next(1); // We are starting!
 counter.next(2); // 2
 counter.next(3); // 3
-counter.next(4); // 4
-counter.next(5); // We are done!
+counter.next(4); // 4\n We are done!
+counter.next(5); // <doesn't print anything>
 ```
 
 Woah, what?! The generator is consuming values instead of generating them. How is this possible?
@@ -434,7 +435,7 @@ Cool. Now let's build it this interface as a regular function!
 
 ```javascript
 function adder(initialValue) {
-  let state = 0;
+  let state = 'initial';
   let done = false;
   let sum = initialValue;
 
@@ -442,14 +443,14 @@ function adder(initialValue) {
     let result;
 
     switch (state) {
-      case 0:
+      case 'initial':
         result = initialValue;
-        state = 1;
+        state = 'loop';
         break;
-      case 1:
+      case 'loop':
         sum += input;
         result = sum;
-        state = 1;
+        state = 'loop';
         break;
       default:
         break;
@@ -482,7 +483,7 @@ There's one more little bit to cover with generators. How do exceptions work? We
 occur inside the generators are easy: `next()` will propagate the exception to the caller, and the
 generator dies. Relaying an exception to a generator relies on the `throw()` method we glossed over.
 
-Let's give our adder a crazy interface. If an exception is relayed to the generator by the caller,
+Let's give our adder a crazy new feature. If an exception is relayed to the generator by the caller,
 it will revert to the last value of the sum.
 
 ```javascript
@@ -509,6 +510,8 @@ console.log(add.throw(new Error('BOO)!'))); // 1
 console.log(add.next(4)); // 5
 ```
 
+** Coding challenge - Generator error propagation **
+
 Oh boy, how do we implement `throw()`?
 
 Simple! An error is just another value. We can just pass it into `go()` as another argument. Note
@@ -517,62 +520,11 @@ generator will have the same effect as if it were written as `throw e`. This mea
 should be checking for error in _every_ state in our state machine, and failing if we can't handle
 it.
 
-```javascript
-function adder(initialValue) {
-  let state = 0;
-  let done = false;
-  let sum = initialValue;
-  let lastSum;
-  let temp;
+Let's start with the previous implementation of adder, copied
 
-  function go(input, err) {
-    let result;
+[Template](blob/master/challenges/generator-error-propagation.js)
 
-    switch (state) {
-      case 0:
-        if (err) {
-          throw err;
-        }
-        temp = sum;
-        result = initialValue;
-        state = 1;
-        break;
-      case 1:
-        try {
-          if (err) {
-            throw err;
-          }
-          sum += input;
-          lastSum = temp;
-          temp = sum;
-        } catch (e) {
-          sum = lastSum;
-        }
-        result = sum;
-        state = 1;
-        break;
-      default:
-        break;
-    }
-
-    return {done: done, value: result};
-  }
-
-  return {
-    next: go,
-    throw: function (err) {
-      return go(undefined, err)
-    }
-  }
-}
-
-const add = adder(0);
-console.log(add.next()); // 0
-console.log(add.next(1)); // 1
-console.log(add.next(2)); // 3
-console.log(add.throw(new Error('BOO)!'))); // 1
-console.log(add.next(4)); // 5
-```
+[Solution](blob/master/solutions/generator-error-propagation-solution.js)
 
 Boom! We've implemented a set of co-routines that can pass messages and exceptions to each other,
   just like a real generator can.
@@ -633,9 +585,12 @@ co(function* () {
 });
 ```
 
+** Coding challenge - `co()` simple **
+
 Great! Now let's build `co()` ourselves and build up some intuition on how exactly this slave
 routine works. `co()` must
 
+- Return a Promise for the caller to wait on
 - Instantiate the generator
 - Continuously call `.next()` to get new values
 - If it gets a Promise, it must wait for it to complete and pass the resolved value to the generator
@@ -643,6 +598,8 @@ routine works. `co()` must
 
 Let's not worry about errors for now, and build a simple `co()` method that can handle the contrived
 example below:
+
+[Template](blob/master/challenges/co-simple.js)
 
 ```javascript
 function deferred(val) {
@@ -654,30 +611,27 @@ co(function* asyncAdds(initialValue) {
   console.log(yield deferred(initialValue + 2));
   console.log(yield deferred(initialValue + 3));
 });
-```
 
-Let's get crack'in.
-
-```javascript
 function co(generator) {
   return new Promise((resolve, reject) => {
-    const g = generator();
-
-    function next(nextVal) {
-      const ret = g.next(nextVal);
-      if (ret.done) {
-        return resolve(ret.value);
-      }
-
-      ret.value.then(next);
-    }
-    next();
+    // Your code goes here
   });
 }
 ```
 
+[Solution](blob/master/solutions/co-simple-solution.js)
+
 Not too bad at all right? With about 10 lines of code we duplicated core functionality of the once
 magical and almighty `co()`. Let's see if we can add on it. How about exception handling?
+
+
+** Coding challenge - `co()` exception handling **
+
+When a Promise yielded by the generator is rejected, we want `co()` to signal the exception to
+the generator routine. Remember that the generator interface provides a `.throw()` method for us to
+send exceptions over.
+
+[Template](blob/master/challenges/co-error.js)
 
 ```javascript
 function deferred(val) {
@@ -697,51 +651,17 @@ co(function* asyncAdds() {
   }
   console.log(yield deferred(3));
 });
-```
 
-Solution:
-
-```javascript
 function co(generator) {
   return new Promise((resolve, reject) => {
-    const g = generator();
-
-    function onResolve(value) {
-      let ret;
-
-      try {
-        ret = g.next(value);
-      } catch (e) {
-        reject(e)
-      }
-      next(ret);
-    }
-
-    function onReject(err) {
-      let ret;
-
-      try {
-        ret = g.throw(err);
-      } catch (e) {
-        reject(e);
-      }
-      next(ret);
-    }
-
-    function next(ret) {
-      if (ret.done) {
-        return resolve(ret.value);
-      }
-
-      ret.value.then(onResolve, onReject);
-    }
-
-    onResolve();
+    // Your code goes here.
   });
 }
 ```
 
-This got a little tricky. We needed different callbacks depending on if the yielded promise resolved
+[Solution](blob/master/solutions/co-error-solution.js)
+
+This gets a little tricky. We need different callbacks depending on if the yielded promise resolved
 or rejected, so the solution moves the `.next()` call into a separate `onResolve()` method, and uses
 a separate `onReject()` method to call `.throw()` when needed. Both of the callbacks are wrapped in
 `try/catch` themselves to reject the `co()` promise immediately if the generator didn't have a
