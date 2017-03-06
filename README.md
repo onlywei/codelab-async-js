@@ -510,7 +510,7 @@ console.log(add.throw(new Error('BOO)!'))); // 1
 console.log(add.next(4)); // 5
 ```
 
-** Coding challenge - Generator error propagation **
+### Coding challenge - Generator error propagation
 
 Oh boy, how do we implement `throw()`?
 
@@ -522,9 +522,9 @@ it.
 
 Let's start with the previous implementation of adder, copied
 
-[Template](blob/master/challenges/generator-error-propagation.js)
+[Template](challenges/generator-error-propagation.js)
 
-[Solution](blob/master/solutions/generator-error-propagation-solution.js)
+[Solution](solutions/generator-error-propagation-solution.js)
 
 Boom! We've implemented a set of co-routines that can pass messages and exceptions to each other,
   just like a real generator can.
@@ -585,7 +585,7 @@ co(function* () {
 });
 ```
 
-** Coding challenge - `co()` simple **
+### Coding challenge - `co()` simple
 
 Great! Now let's build `co()` ourselves and build up some intuition on how exactly this slave
 routine works. `co()` must
@@ -599,7 +599,7 @@ routine works. `co()` must
 Let's not worry about errors for now, and build a simple `co()` method that can handle the contrived
 example below:
 
-[Template](blob/master/challenges/co-simple.js)
+[Template](challenges/co-simple.js)
 
 ```javascript
 function deferred(val) {
@@ -619,19 +619,19 @@ function co(generator) {
 }
 ```
 
-[Solution](blob/master/solutions/co-simple-solution.js)
+[Solution](solutions/co-simple-solution.js)
 
 Not too bad at all right? With about 10 lines of code we duplicated core functionality of the once
 magical and almighty `co()`. Let's see if we can add on it. How about exception handling?
 
 
-** Coding challenge - `co()` exception handling **
+### Coding challenge - `co()` exception handling
 
 When a Promise yielded by the generator is rejected, we want `co()` to signal the exception to
 the generator routine. Remember that the generator interface provides a `.throw()` method for us to
 send exceptions over.
 
-[Template](blob/master/challenges/co-error.js)
+[Template](challenges/co-error.js)
 
 ```javascript
 function deferred(val) {
@@ -659,7 +659,7 @@ function co(generator) {
 }
 ```
 
-[Solution](blob/master/solutions/co-error-solution.js)
+[Solution](solutions/co-error-solution.js)
 
 This gets a little tricky. We need different callbacks depending on if the yielded promise resolved
 or rejected, so the solution moves the `.next()` call into a separate `onResolve()` method, and uses
