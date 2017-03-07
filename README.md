@@ -718,7 +718,7 @@ There are a few minor quirks/differences to note though:
 
 ## Ending
 
-We reviewed the entire abridged history of Javascript asynchrnous programming, figured out how
+We reviewed the entire abridged history of Javascript asynchronous programming, figured out how
 generators and `co()` work "behind the scenes", and then learned how we can apply the intuitions and
 learnings to `async/await`. Feeling proud? You should.
 
